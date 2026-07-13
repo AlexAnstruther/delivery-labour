@@ -95,7 +95,12 @@
     <div id="map"></div>
     <h2 style="font-size:1.25rem; margin-bottom:0;">Nearest streets still not claimed.</h2>
     <p class="lede" style="margin-top:4px;">Tap <strong>as many as you can</strong> to claim them.</p>
+
+    <label for="street-search">Know which street you want? Search for it</label>
+    <input type="text" id="street-search" placeholder="Start typing a street name&hellip;" autocomplete="off">
+
     <div id="street-list"></div>
+    <button id="btn-more" class="secondary hidden">Show more streets</button>
 
     <label for="name">Your name</label>
     <input type="text" id="name" autocomplete="name">
@@ -131,7 +136,9 @@
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbypfnV0rPaeHEiO8cMaSOUOrj_XUyenbQlr4NXf2bEWkknCI5R1j-KOyaXQVPNatkIk8Q/exec";
 
 const MAX_SELECT = 12;   // max streets per claim
-const SHOW_N = 12;      // how many nearby streets to list
+const SHOW_N = 12;      // streets listed per "page" ("Show more" adds this many)
+
+let shownCount = SHOW_N; // how many are currently listed (grows via Show more)
 
 // ------------------------------------------------------------
 let streets = [];             // from the backend
@@ -181,6 +188,7 @@ async function findStreets() {
       return;
     }
     if (!streets.length) streets = await fetchStreets();
+    shownCount = SHOW_N;
     renderStreets();
     hide("step-postcode");
     show("step-streets");
@@ -193,32 +201,61 @@ async function findStreets() {
   }
 }
 
-function nearestUnclaimed() {
+function unclaimedByDistance() {
   return streets
     .filter(s => !s.claimed)
     .map(s => ({ ...s, dist: haversineKm(home.lat, home.lon, s.lat, s.lon) }))
-    .sort((a, b) => a.dist - b.dist)
-    .slice(0, SHOW_N);
+    .sort((a, b) => a.dist - b.dist);
 }
 
 // ---------------- Step 2: pick & claim ----------------
+$("street-search").addEventListener("input", renderStreets);
+$("btn-more").addEventListener("click", () => {
+  shownCount += SHOW_N;
+  renderStreets();
+});
+
 function renderStreets() {
   const list = $("street-list");
   list.innerHTML = "";
-  const nearby = nearestUnclaimed();
 
-  if (!nearby.length) {
-    list.innerHTML = "<p class='notice'>Amazing news — every street near you is already covered! " +
-      "Try a different postcode, or reply to the email and we'll find you something.</p>";
+  const all = unclaimedByDistance();
+  const q = $("street-search").value.trim().toLowerCase();
+
+  let matches, hasMore = false;
+  if (q) {
+    matches = all.filter(s =>
+      String(s.street || "").toLowerCase().includes(q) ||
+      String(s.ward || "").toLowerCase().includes(q));
+  } else {
+    matches = all.slice(0, shownCount);
+    hasMore = all.length > shownCount;
+  }
+
+  // Streets already ticked stay pinned at the top, whatever the search says,
+  // so a selection can never silently disappear from view.
+  const pinned = all.filter(s => selected.has(s.street_id));
+  const rest = matches.filter(s => !selected.has(s.street_id));
+  const toShow = pinned.concat(rest);
+
+  $("btn-more").classList.toggle("hidden", !hasMore || !!q);
+
+  if (!toShow.length) {
+    list.innerHTML = q
+      ? "<p class='notice'>No unclaimed streets match &ldquo;" + esc($("street-search").value.trim()) +
+        "&rdquo;. It may already be covered — check the map, or try fewer letters.</p>"
+      : "<p class='notice'>Amazing news — every street near you is already covered! " +
+        "Try a different postcode, or reply to the email and we'll find you something.</p>";
     return;
   }
 
-  nearby.forEach(s => {
+  toShow.forEach(s => {
     const card = document.createElement("label");
-    card.className = "street-card";
+    card.className = "street-card" + (selected.has(s.street_id) ? " selected" : "");
     const distTxt = s.dist < 1 ? Math.round(s.dist * 1000) + " m" : s.dist.toFixed(1) + " km";
     card.innerHTML =
-      '<input type="checkbox" data-id="' + s.street_id.replace(/"/g, "&quot;") + '">' +
+      '<input type="checkbox" data-id="' + s.street_id.replace(/"/g, "&quot;") + '"' +
+      (selected.has(s.street_id) ? " checked" : "") + ">" +
       "<div><strong>" + esc(s.street) + "</strong><br>" +
       '<span class="meta">' + esc(s.ward) + " &middot; " + s.households +
       " households &middot; " + distTxt + " away</span></div>";
@@ -235,9 +272,18 @@ function renderStreets() {
         selected.delete(id);
       }
       cb.closest(".street-card").classList.toggle("selected", cb.checked);
-      $("btn-claim").disabled = selected.size === 0;
+      updateClaimBtn();
     });
   });
+
+  updateClaimBtn();
+}
+
+function updateClaimBtn() {
+  const n = selected.size;
+  $("btn-claim").disabled = n === 0;
+  $("btn-claim").textContent = n === 0 ? "Claim selected streets"
+    : "Claim " + n + " selected street" + (n === 1 ? "" : "s");
 }
 
 function renderMap() {
