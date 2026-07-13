@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claim your delivery streets</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  /* Mobile-first, large touch targets, high contrast. */
+  :root {
+    --red: #d4351c;
+    --green: #00703c;
+    --ink: #0b0c0c;
+    --grey: #f3f2f1;
+    --border: #b1b4b6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 18px;
+    line-height: 1.5;
+    color: var(--ink);
+    margin: 0;
+    background: #fff;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.6rem; margin: 8px 0 4px; }
+  .lede { color: #505a5f; margin-top: 0; }
+  label { display: block; font-weight: 600; margin: 16px 0 4px; }
+  input[type=text], input[type=email] {
+    width: 100%;
+    font-size: 1.1rem;
+    padding: 12px;
+    border: 2px solid var(--ink);
+    border-radius: 6px;
+  }
+  button {
+    display: block;
+    width: 100%;
+    font-size: 1.15rem;
+    font-weight: 600;
+    padding: 14px;
+    margin-top: 16px;
+    border: none;
+    border-radius: 6px;
+    background: var(--green);
+    color: #fff;
+    cursor: pointer;
+    min-height: 52px;
+  }
+  button:disabled { background: #999; cursor: default; }
+  button.secondary { background: #fff; color: var(--ink); border: 2px solid var(--ink); }
+  .hidden { display: none !important; }
+  .error { color: var(--red); font-weight: 600; margin-top: 12px; }
+  .notice {
+    background: var(--grey);
+    border-left: 6px solid var(--green);
+    padding: 12px;
+    margin-top: 16px;
+  }
+  #map { height: 260px; border-radius: 8px; margin-top: 16px; border: 1px solid var(--border); }
+  .street-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 10px;
+    cursor: pointer;
+  }
+  .street-card.selected { border-color: var(--green); background: #e8f3ee; }
+  .street-card input { width: 24px; height: 24px; flex-shrink: 0; }
+  .street-card .meta { color: #505a5f; font-size: 0.95rem; }
+  .spinner { text-align: center; padding: 24px; color: #505a5f; }
+  footer { text-align: center; color: #505a5f; font-size: 0.85rem; padding: 24px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Claim your local streets as a delivery volunteer</h1>
+  <p class="lede">Enter your postcode, claim as many streets as you can manage, and Alex will be in touch. It takes less than a minute.</p>
+
+  <!-- STEP 1: postcode -->
+  <section id="step-postcode">
+    <label for="postcode">Your postcode</label>
+    <input type="text" id="postcode" autocomplete="postal-code" placeholder="e.g. KY16 9AJ"
+           autocapitalize="characters" enterkeyhint="go">
+    <button id="btn-find">Find streets near me</button>
+    <p id="postcode-error" class="error hidden"></p>
+  </section>
+
+  <!-- STEP 2: pick streets -->
+  <section id="step-streets" class="hidden">
+    <div id="map"></div>
+    <h2 style="font-size:1.25rem; margin-bottom:0;">Nearest streets still not claimed.</h2>
+    <p class="lede" style="margin-top:4px;">Tap <strong>as many as you can</strong> to claim them.</p>
+    <div id="street-list"></div>
+
+    <label for="name">Your name</label>
+    <input type="text" id="name" autocomplete="name">
+    <label for="email">Your email</label>
+    <input type="email" id="email" autocomplete="email">
+
+    <button id="btn-claim" disabled>Claim selected streets</button>
+    <p id="claim-error" class="error hidden"></p>
+  </section>
+
+  <!-- STEP 3: done -->
+  <section id="step-done" class="hidden">
+    <div class="notice">
+      <h2 style="margin-top:0;">Thank you!</h2>
+      <p>You've claimed:</p>
+      <ul id="done-list"></ul>
+      <p>We'll email you shortly to confirm and get the leaflets to you. You can close this page now.</p>
+    </div>
+    <button class="secondary" onclick="location.reload()">Claim more streets</button>
+  </section>
+
+  <div id="loading" class="spinner hidden">One moment&hellip;</div>
+  <footer>Questions? Just reply to the email that sent you here.</footer>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+
+// ============================================================
+// CONFIG — paste your Apps Script Web App URL between the quotes
+// ============================================================
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbypfnV0rPaeHEiO8cMaSOUOrj_XUyenbQlr4NXf2bEWkknCI5R1j-KOyaXQVPNatkIk8Q/exec";
+
+const MAX_SELECT = 12;   // max streets per claim
+const SHOW_N = 12;      // how many nearby streets to list
+
+// ------------------------------------------------------------
+let streets = [];             // from the backend
+let home = null;              // {lat, lon}
+let selected = new Set();     // street_ids
+let map = null;
+
+const $ = (id) => document.getElementById(id);
+const show = (id) => $(id).classList.remove("hidden");
+const hide = (id) => $(id).classList.add("hidden");
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180;
+  const a = Math.sin((lat2 - lat1) * r / 2) ** 2 +
+    Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin((lon2 - lon1) * r / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(a));
+}
+
+async function fetchStreets() {
+  const resp = await fetch(SCRIPT_URL);
+  const data = await resp.json();
+  if (!data.ok) throw new Error("Could not load street list");
+  return data.streets.filter(s => s.lat && s.lon);
+}
+
+async function geocodePostcode(pc) {
+  const clean = pc.trim().replace(/\s+/g, "");
+  if (!clean) return null;
+  const resp = await fetch("https://api.postcodes.io/postcodes/" + encodeURIComponent(clean));
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  return { lat: data.result.latitude, lon: data.result.longitude };
+}
+
+// ---------------- Step 1: find ----------------
+$("btn-find").addEventListener("click", findStreets);
+$("postcode").addEventListener("keydown", (e) => { if (e.key === "Enter") findStreets(); });
+
+async function findStreets() {
+  hide("postcode-error");
+  $("btn-find").disabled = true;
+  show("loading");
+  try {
+    home = await geocodePostcode($("postcode").value);
+    if (!home) {
+      showError("postcode-error", "We couldn't find that postcode — please check it and try again.");
+      return;
+    }
+    if (!streets.length) streets = await fetchStreets();
+    renderStreets();
+    hide("step-postcode");
+    show("step-streets");
+    renderMap();
+  } catch (err) {
+    showError("postcode-error", "Something went wrong loading the street list. Please try again in a minute.");
+  } finally {
+    $("btn-find").disabled = false;
+    hide("loading");
+  }
+}
+
+function nearestUnclaimed() {
+  return streets
+    .filter(s => !s.claimed)
+    .map(s => ({ ...s, dist: haversineKm(home.lat, home.lon, s.lat, s.lon) }))
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, SHOW_N);
+}
+
+// ---------------- Step 2: pick & claim ----------------
+function renderStreets() {
+  const list = $("street-list");
+  list.innerHTML = "";
+  const nearby = nearestUnclaimed();
+
+  if (!nearby.length) {
+    list.innerHTML = "<p class='notice'>Amazing news — every street near you is already covered! " +
+      "Try a different postcode, or reply to the email and we'll find you something.</p>";
+    return;
+  }
+
+  nearby.forEach(s => {
+    const card = document.createElement("label");
+    card.className = "street-card";
+    const distTxt = s.dist < 1 ? Math.round(s.dist * 1000) + " m" : s.dist.toFixed(1) + " km";
+    card.innerHTML =
+      '<input type="checkbox" data-id="' + s.street_id.replace(/"/g, "&quot;") + '">' +
+      "<div><strong>" + esc(s.street) + "</strong><br>" +
+      '<span class="meta">' + esc(s.ward) + " &middot; " + s.households +
+      " households &middot; " + distTxt + " away</span></div>";
+    list.appendChild(card);
+  });
+
+  list.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const id = cb.dataset.id;
+      if (cb.checked) {
+        if (selected.size >= MAX_SELECT) { cb.checked = false; return; }
+        selected.add(id);
+      } else {
+        selected.delete(id);
+      }
+      cb.closest(".street-card").classList.toggle("selected", cb.checked);
+      $("btn-claim").disabled = selected.size === 0;
+    });
+  });
+}
+
+function renderMap() {
+  if (map) { map.remove(); map = null; }
+  map = L.map("map").setView([home.lat, home.lon], 14);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors",
+  }).addTo(map);
+
+  L.circleMarker([home.lat, home.lon], {
+    radius: 9, color: "#1d70b8", fillColor: "#1d70b8", fillOpacity: 1,
+  }).addTo(map).bindPopup("You are here");
+
+  streets.forEach(s => {
+    L.circleMarker([s.lat, s.lon], {
+      radius: 7,
+      color: s.claimed ? "#6f777b" : "#d4351c",
+      fillColor: s.claimed ? "#6f777b" : "#d4351c",
+      fillOpacity: 0.85,
+    }).addTo(map).bindPopup(
+      "<strong>" + esc(s.street) + "</strong><br>" + esc(s.ward) + "<br>" +
+      s.households + " households<br>" +
+      (s.claimed ? "Already covered" : "Needs a deliverer")
+    );
+  });
+}
+
+$("btn-claim").addEventListener("click", async () => {
+  hide("claim-error");
+  const name = $("name").value.trim();
+  const email = $("email").value.trim();
+  if (!name) return showError("claim-error", "Please enter your name.");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return showError("claim-error", "Please enter a valid email address.");
+
+  $("btn-claim").disabled = true;
+  show("loading");
+  try {
+    // Content-Type text/plain keeps this a "simple" request so the browser
+    // doesn't send a CORS preflight (which Apps Script can't answer).
+    const resp = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ name, email, streetIds: [...selected] }),
+    });
+    const data = await resp.json();
+    if (!data.ok) return showError("claim-error", data.error || "Something went wrong — please try again.");
+
+    if (data.claimed.length) {
+      $("done-list").innerHTML = data.claimed.map(s => "<li>" + esc(s) + "</li>").join("");
+      hide("step-streets");
+      show("step-done");
+      if (data.taken.length) {
+        $("done-list").innerHTML += "<li><em>(" + esc(data.taken.join(", ")) +
+          " was snapped up by someone else just before you — not included)</em></li>";
+      }
+    } else {
+      // Everything they picked was just taken: refresh and let them re-pick.
+      streets = await fetchStreets();
+      selected.clear();
+      renderStreets();
+      renderMap();
+      showError("claim-error",
+        "Sorry — those streets were claimed by someone else moments ago. The list has been refreshed, please pick again.");
+    }
+  } catch (err) {
+    showError("claim-error", "Couldn't reach the server — please check your connection and try again.");
+  } finally {
+    $("btn-claim").disabled = selected.size === 0;
+    hide("loading");
+  }
+});
+
+// ---------------- helpers ----------------
+function showError(id, msg) { $(id).textContent = msg; show(id); }
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+</script>
+</body>
+</html>
