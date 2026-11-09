@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Opening your email…</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 16px;color:#1a1a1a;background:#fff;line-height:1.5}
+  a.btn{display:block;text-align:center;padding:14px;margin:12px 0;border-radius:6px;background:#E4003B;color:#fff;text-decoration:none;font-weight:600}
+  a.alt{background:#f0f0f0;color:#1a1a1a}
+</style>
+</head>
+<body>
+<p>Opening your email app…</p>
+<a id="mail" class="btn" href="#">Tap here if nothing happens</a>
+<a id="gmail" class="btn alt" href="#">Use Gmail in your browser instead</a>
+<script>
+  var SURVEY  = "https://actionnetwork.org/forms/YOUR-SURVEY?source=email-share";
+  var SUBJECT = "Fill out our MP's e-bike survey";
+  var BODY    = "Can you fill out this e-bike survey our MP is running: " + SURVEY;
+
+  var mailto = "mailto:?subject=" + encodeURIComponent(SUBJECT) + "&body=" + encodeURIComponent(BODY);
+  var gmail  = "https://mail.google.com/mail/?view=cm&fs=1&su=" + encodeURIComponent(SUBJECT) + "&body=" + encodeURIComponent(BODY);
+
+  document.getElementById("mail").href = mailto;
+  document.getElementById("gmail").href = gmail;
+  window.location.href = mailto;
+</script>
+</body>
+</html>
